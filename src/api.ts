@@ -1,7 +1,6 @@
 import type { Claim, Commitment } from './types';
 
 export async function createSession(): Promise<string> {
-  // Stateless — just generate a local UUID; server no longer stores sessions
   return crypto.randomUUID();
 }
 
@@ -22,7 +21,7 @@ export async function askQuestionStreaming(
   onComplete: (answer: string, claims: Claim[], ledger: Commitment[]) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  // ── Step 1: Stream answer tokens ────────────────────────────────────────────
+  // ── Step 1: Stream answer tokens from /api/ask ───────────────────────────────
   const res = await fetch('/api/ask', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -42,6 +41,7 @@ export async function askQuestionStreaming(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let tokenAccum = '';  // fallback: accumulate raw tokens
   let finalAnswer = '';
 
   try {
@@ -57,7 +57,7 @@ export async function askQuestionStreaming(
         if (!part.trim()) continue;
         const lines = part.split('\n');
         const eventLine = lines.find((l) => l.startsWith('event:'));
-        const dataLine = lines.find((l) => l.startsWith('data:'));
+        const dataLine  = lines.find((l) => l.startsWith('data:'));
         if (!eventLine || !dataLine) continue;
 
         const event = eventLine.slice(6).trim();
@@ -66,23 +66,34 @@ export async function askQuestionStreaming(
         catch { continue; }
 
         if (event === 'token') {
-          onToken(data as string);
+          const tok = data as string;
+          tokenAccum += tok;
+          onToken(tok);
         } else if (event === 'answer') {
           finalAnswer = (data as { answer: string }).answer;
         } else if (event === 'error') {
           throw new Error((data as { error: string }).error);
         }
-        // 'done' event just signals stream end — we handle it via reader.done
+        // 'done' — handled by reader ending
       }
     }
   } finally {
     reader.releaseLock();
   }
 
+  // Fallback: if the 'answer' event was missed, use accumulated tokens
+  if (!finalAnswer && tokenAccum) {
+    finalAnswer = tokenAccum;
+  }
+
+  if (!finalAnswer) {
+    throw new Error('No answer received from server');
+  }
+
   // Signal that breakdown is starting
   onAnalyzing();
 
-  // ── Step 2: Fetch claim breakdown separately ─────────────────────────────────
+  // ── Step 2: Fetch claim breakdown from /api/breakdown ────────────────────────
   const bdRes = await fetch('/api/breakdown', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

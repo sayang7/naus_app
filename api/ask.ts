@@ -20,8 +20,8 @@ function stripMarkdown(text: string): string {
     .replace(/`([^`]+)`/g, '$1');
 }
 
-function sseChunk(event: string, data: unknown): Uint8Array {
-  return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+function sse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 const MODEL = 'claude-sonnet-4-5';
@@ -40,11 +40,7 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  let body: {
-    question?: string;
-    predefinedAnswer?: string;
-    image?: ImageInput;
-  };
+  let body: { question?: string; predefinedAnswer?: string; image?: ImageInput };
   try {
     body = await req.json();
   } catch {
@@ -61,74 +57,78 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  const client = new Anthropic({ apiKey });
+  // Use TransformStream for reliable SSE on Vercel Edge
+  const { readable, writable } = new TransformStream<string, string>();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        let answer = '';
+  const write = (s: string) => writer.write(enc.encode(s) as unknown as string);
 
-        if (predefinedAnswer?.trim()) {
-          // Demo mode: stream predefined answer word-by-word
-          answer = stripMarkdown(predefinedAnswer.trim());
-          const words = answer.split(/(\s+)/);
-          for (const chunk of words) {
-            if (chunk) {
-              controller.enqueue(sseChunk('token', chunk));
-              await new Promise((r) => setTimeout(r, 25));
-            }
+  // Run the streaming logic in the background
+  (async () => {
+    try {
+      let answer = '';
+
+      if (predefinedAnswer?.trim()) {
+        // Demo mode: stream predefined answer word-by-word
+        answer = stripMarkdown(predefinedAnswer.trim());
+        const words = answer.split(/(\s+)/);
+        for (const chunk of words) {
+          if (chunk) {
+            await write(sse('token', chunk));
+            await new Promise((r) => setTimeout(r, 25));
           }
-        } else {
-          // Build message content (with optional image)
-          type ContentBlock =
-            | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
-            | { type: 'text'; text: string };
-          const userContent: ContentBlock[] = [];
-          if (image?.data && image?.mediaType) {
-            userContent.push({
-              type: 'image',
-              source: { type: 'base64', media_type: image.mediaType, data: image.data },
-            });
-          }
-          userContent.push({ type: 'text', text: question.trim() });
-
-          const anthropicStream = await client.messages.create({
-            model: MODEL,
-            max_tokens: 1024,
-            stream: true,
-            system:
-              'Answer directly in plain prose only — no markdown, no asterisks, no bullet points, no numbered lists, no headers, no backticks. Write in paragraphs. Be accurate and specific.',
-            messages: [{ role: 'user', content: userContent }],
-          });
-
-          for await (const event of anthropicStream) {
-            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-              const token = event.delta.text;
-              answer += token;
-              controller.enqueue(sseChunk('token', token));
-            }
-          }
-          answer = stripMarkdown(answer);
         }
+      } else {
+        // Build message content (with optional image)
+        type ContentBlock =
+          | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
+          | { type: 'text'; text: string };
+        const userContent: ContentBlock[] = [];
+        if (image?.data && image?.mediaType) {
+          userContent.push({
+            type: 'image',
+            source: { type: 'base64', media_type: image.mediaType, data: image.data },
+          });
+        }
+        userContent.push({ type: 'text', text: question.trim() });
 
-        // Send the final answer so the client can request breakdown
-        controller.enqueue(sseChunk('answer', { answer }));
-        controller.enqueue(sseChunk('done', {}));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[naus/ask]', message);
-        controller.enqueue(sseChunk('error', { error: message }));
-      } finally {
-        controller.close();
+        const client = new Anthropic({ apiKey });
+        const anthropicStream = await client.messages.create({
+          model: MODEL,
+          max_tokens: 1024,
+          stream: true,
+          system: 'Answer directly in plain prose only — no markdown, no asterisks, no bullet points, no numbered lists, no headers, no backticks. Write in paragraphs. Be accurate and specific.',
+          messages: [{ role: 'user', content: userContent }],
+        });
+
+        for await (const event of anthropicStream) {
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            const token = event.delta.text;
+            answer += token;
+            await write(sse('token', token));
+          }
+        }
+        answer = stripMarkdown(answer);
       }
-    },
-  });
 
-  return new Response(stream, {
+      await write(sse('answer', { answer }));
+      await write(sse('done', {}));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[naus/ask]', message);
+      try { await write(sse('error', { error: message })); } catch { /* ignore */ }
+    } finally {
+      try { await writer.close(); } catch { /* ignore */ }
+    }
+  })();
+
+  return new Response(readable as unknown as ReadableStream, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'X-Content-Type-Options': 'nosniff',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      'Connection': 'keep-alive',
     },
   });
 }
