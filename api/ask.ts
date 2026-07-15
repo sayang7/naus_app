@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 export const maxDuration = 60;
 export const runtime = 'edge';
+export const config = { runtime: 'edge' };
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
@@ -9,6 +10,8 @@ interface ImageInput {
   mediaType: ImageMediaType;
   data: string; // base64
 }
+
+const encoder = new TextEncoder();
 
 function stripMarkdown(text: string): string {
   return text
@@ -20,23 +23,12 @@ function stripMarkdown(text: string): string {
     .replace(/`([^`]+)`/g, '$1');
 }
 
-function sse(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-}
-
 const MODEL = 'claude-sonnet-4-5';
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'ANTHROPIC_API_KEY not configured' }), {
-      status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }
 
@@ -57,39 +49,44 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // Use TransformStream for reliable SSE on Vercel Edge
-  const { readable, writable } = new TransformStream<string, string>();
+  // TransformStream pattern: return Response immediately, write async in background.
+  // This is the canonical Edge Runtime streaming pattern — more reliable than
+  // ReadableStream.start() across Vercel's infrastructure.
+  const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
-  const enc = new TextEncoder();
 
-  const write = (s: string) => writer.write(enc.encode(s) as unknown as string);
+  const write = (event: string, data: unknown): Promise<void> =>
+    writer.write(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
 
-  // Run the streaming logic in the background
+  // Fire-and-forget: stream runs while client reads the readable side
   (async () => {
     try {
       let answer = '';
 
       if (predefinedAnswer?.trim()) {
-        // Demo mode: stream predefined answer word-by-word
+        // Demo mode: no API key needed, stream word-by-word
         answer = stripMarkdown(predefinedAnswer.trim());
         const words = answer.split(/(\s+)/);
         for (const chunk of words) {
           if (chunk) {
-            await write(sse('token', chunk));
-            await new Promise((r) => setTimeout(r, 25));
+            await write('token', chunk);
+            await new Promise<void>((r) => setTimeout(r, 25));
           }
         }
       } else {
-        // Build message content (with optional image)
+        // Live mode: stream from Anthropic
+        const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+        if (!apiKey) {
+          await write('error', { error: 'ANTHROPIC_API_KEY not configured' });
+          return;
+        }
+
         type ContentBlock =
           | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
           | { type: 'text'; text: string };
         const userContent: ContentBlock[] = [];
         if (image?.data && image?.mediaType) {
-          userContent.push({
-            type: 'image',
-            source: { type: 'base64', media_type: image.mediaType, data: image.data },
-          });
+          userContent.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
         }
         userContent.push({ type: 'text', text: question.trim() });
 
@@ -106,29 +103,28 @@ export default async function handler(req: Request): Promise<Response> {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             const token = event.delta.text;
             answer += token;
-            await write(sse('token', token));
+            await write('token', token);
           }
         }
         answer = stripMarkdown(answer);
       }
 
-      await write(sse('answer', { answer }));
-      await write(sse('done', {}));
+      await write('answer', { answer });
+      await write('done', {});
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[naus/ask]', message);
-      try { await write(sse('error', { error: message })); } catch { /* ignore */ }
+      try { await write('error', { error: message }); } catch { /* stream may be closed */ }
     } finally {
-      try { await writer.close(); } catch { /* ignore */ }
+      try { await writer.close(); } catch { /* already closed */ }
     }
   })();
 
-  return new Response(readable as unknown as ReadableStream, {
+  return new Response(readable, {
     headers: {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       'X-Accel-Buffering': 'no',
-      'Connection': 'keep-alive',
     },
   });
 }

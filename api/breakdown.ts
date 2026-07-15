@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 export const maxDuration = 60;
 export const runtime = 'edge';
+export const config = { runtime: 'edge' };
 
 type ClaimStatus = 'grounded' | 'ambiguous' | 'assumption' | 'unverifiable' | 'contradiction';
 
