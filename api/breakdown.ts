@@ -1,8 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 export const maxDuration = 60;
-export const runtime = 'edge';
-export const config = { runtime: 'edge' };
 
 type ClaimStatus = 'grounded' | 'ambiguous' | 'assumption' | 'unverifiable' | 'contradiction';
 
@@ -29,39 +28,27 @@ interface RawClaim {
 
 const BREAKDOWN_MODEL = 'claude-haiku-4-5-20251001';
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405, headers: { 'Content-Type': 'application/json' },
-    });
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'ANTHROPIC_API_KEY not configured' }), {
-      status: 500, headers: { 'Content-Type': 'application/json' },
-    });
+    res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    return;
   }
 
-  let body: {
+  const { question, answer, priorCommitments } = (req.body ?? {}) as {
     question?: string;
     answer?: string;
     priorCommitments?: StoredCommitment[];
   };
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
-      status: 400, headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const { question, answer, priorCommitments } = body;
 
   if (!question?.trim() || !answer?.trim()) {
-    return new Response(JSON.stringify({ error: 'question and answer are required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json' },
-    });
+    res.status(400).json({ error: 'question and answer are required' });
+    return;
   }
 
   const prior: StoredCommitment[] = Array.isArray(priorCommitments) ? priorCommitments : [];
@@ -178,18 +165,10 @@ For each claim return:
         citationTarget: c.citationTarget,
       }));
 
-    return new Response(
-      JSON.stringify({
-        claims: processedClaims,
-        ledger: [...prior, ...newCommitments],
-      }),
-      { headers: { 'Content-Type': 'application/json' } },
-    );
+    res.json({ claims: processedClaims, ledger: [...prior, ...newCommitments] });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[naus/breakdown]', message);
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500, headers: { 'Content-Type': 'application/json' },
-    });
+    res.status(500).json({ error: message });
   }
 }
