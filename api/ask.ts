@@ -1,6 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
 
+// Extend function timeout to 60s (max on Vercel hobby)
+export const maxDuration = 60;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type ClaimStatus = 'grounded' | 'ambiguous' | 'assumption' | 'unverifiable' | 'contradiction';
@@ -127,20 +130,29 @@ For each claim: identify its exact substring, return startIndex/endIndex (0-inde
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (!process.env.ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
-
-  const { question, predefinedAnswer, priorCommitments } = req.body as {
-    question?: string;
-    predefinedAnswer?: string;
-    priorCommitments?: StoredCommitment[];
-  };
-
-  if (!question?.trim()) return res.status(400).json({ error: 'question is required' });
-
-  const prior: StoredCommitment[] = Array.isArray(priorCommitments) ? priorCommitments : [];
+  // Always return JSON
+  res.setHeader('Content-Type', 'application/json');
 
   try {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    }
+
+    const { question, predefinedAnswer, priorCommitments } = (req.body ?? {}) as {
+      question?: string;
+      predefinedAnswer?: string;
+      priorCommitments?: StoredCommitment[];
+    };
+
+    if (!question?.trim()) {
+      return res.status(400).json({ error: 'question is required' });
+    }
+
+    const prior: StoredCommitment[] = Array.isArray(priorCommitments) ? priorCommitments : [];
+
     const answer = predefinedAnswer?.trim()
       ? stripMarkdown(predefinedAnswer.trim())
       : await getAnswer(question.trim());
@@ -158,10 +170,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter((c) => c.status !== 'contradiction')
       .map((c) => ({ id: c.id, text: c.text, turnNumber: c.turnNumber, status: c.status as ClaimStatus, note: c.note }));
 
-    res.json({ answer, claims: processedClaims, ledger: [...prior, ...newCommitments] });
+    return res.json({ answer, claims: processedClaims, ledger: [...prior, ...newCommitments] });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[naus]', message);
-    res.status(500).json({ error: message });
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[naus/ask]', message);
+    return res.status(500).json({ error: message });
   }
 }
