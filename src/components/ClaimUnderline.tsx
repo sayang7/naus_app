@@ -1,4 +1,5 @@
 import type { Claim, ClaimStatus } from '../types';
+import { STATUS_COLOR } from '../tokens';
 
 interface Segment {
   type: 'text' | 'claim';
@@ -8,9 +9,7 @@ interface Segment {
 
 function buildSegments(answer: string, claims: Claim[]): Segment[] {
   const indexed = claims
-    .filter(
-      (c) => c.startIndex !== undefined && c.endIndex !== undefined && c.endIndex > c.startIndex,
-    )
+    .filter((c) => c.startIndex !== undefined && c.endIndex !== undefined && c.endIndex > c.startIndex)
     .sort((a, b) => a.startIndex! - b.startIndex!);
 
   const nonOverlapping: typeof indexed = [];
@@ -29,11 +28,7 @@ function buildSegments(answer: string, claims: Claim[]): Segment[] {
     if (claim.startIndex! > pos) {
       segments.push({ type: 'text', content: answer.slice(pos, claim.startIndex) });
     }
-    segments.push({
-      type: 'claim',
-      content: answer.slice(claim.startIndex!, claim.endIndex!),
-      claim,
-    });
+    segments.push({ type: 'claim', content: answer.slice(claim.startIndex!, claim.endIndex!), claim });
     pos = claim.endIndex!;
   }
 
@@ -45,16 +40,16 @@ function buildSegments(answer: string, claims: Claim[]): Segment[] {
 }
 
 function underlineStyle(status: ClaimStatus, active: boolean): React.CSSProperties {
-  const color: Record<ClaimStatus, string> = {
-    grounded: '#3A3A40',       // visible on dark panel, not gold
-    ambiguous: '#C9A961',      // gold
-    assumption: '#8A8A85',     // muted dashed
-    unverifiable: '#5A5A60',   // slightly muted
-    contradiction: '#E5484D',  // red
+  const underlineColor: Record<ClaimStatus, string> = {
+    grounded:      '#3A3A40',
+    ambiguous:     STATUS_COLOR.ambiguous,
+    assumption:    STATUS_COLOR.assumption,
+    unverifiable:  '#5A5A60',
+    contradiction: STATUS_COLOR.contradiction,
   };
   return {
     textDecorationLine: 'underline',
-    textDecorationColor: color[status],
+    textDecorationColor: underlineColor[status],
     textDecorationStyle: status === 'assumption' ? 'dashed' : 'solid',
     textDecorationThickness: '1px',
     textUnderlineOffset: '3px',
@@ -86,9 +81,7 @@ export function ClaimUnderline({
   return (
     <div className="text-16 font-normal text-text" style={{ lineHeight: '30px' }}>
       {segments.map((seg, i) => {
-        if (seg.type === 'text') {
-          return <span key={i}>{seg.content}</span>;
-        }
+        if (seg.type === 'text') return <span key={i}>{seg.content}</span>;
 
         const claim = seg.claim!;
         const active = activeClaim === claim.id || hoveredCommitmentId === claim.id;
@@ -99,9 +92,7 @@ export function ClaimUnderline({
             role="button"
             tabIndex={0}
             onClick={() => onClaimClick(claim.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') onClaimClick(claim.id);
-            }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClaimClick(claim.id); }}
             style={underlineStyle(claim.status, active)}
           >
             {seg.content}

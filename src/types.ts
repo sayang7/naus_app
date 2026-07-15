@@ -5,6 +5,8 @@ export type ClaimStatus =
   | 'unverifiable'
   | 'contradiction';
 
+export type ReasoningRole = 'premise' | 'inference' | 'conclusion';
+
 export interface Claim {
   id: string;
   text: string;
@@ -15,6 +17,10 @@ export interface Claim {
   endIndex?: number;
   conflictsWithId?: string;
   turnNumber: number;
+  // Reasoning structure
+  reasoningRole?: ReasoningRole;
+  dependsOnIds?: string[];   // prior commitment IDs this logically requires
+  citationTarget?: string;   // what specific source/study would verify this
 }
 
 export interface Commitment {
@@ -23,6 +29,8 @@ export interface Commitment {
   turnNumber: number;
   status: ClaimStatus;
   note?: string;
+  reasoningRole?: ReasoningRole;
+  citationTarget?: string;
 }
 
 export interface Turn {
@@ -31,6 +39,7 @@ export interface Turn {
   answer: string;
   claims: Claim[];
   turnNumber: number;
+  image?: string; // data URL for display
 }
 
 export interface SavedSession {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { Turn, Commitment, SavedSession } from './types';
-import { createSession, askQuestion } from './api';
+import { createSession, askQuestionStreaming } from './api';
+import type { ImageAttachment } from './api';
 import { DEMO_SCENARIOS } from './demo';
 import type { DemoScenario } from './demo';
 import { Conversation } from './components/Conversation';
@@ -12,6 +13,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 // ── localStorage helpers ──────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'naus-sessions-v1';
+const THEME_KEY = 'naus-theme';
 
 function loadSavedSessions(): SavedSession[] {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); }
@@ -29,6 +31,19 @@ function generateTitle(question: string): string {
   return question.length > 60 ? question.slice(0, 57) + '…' : question;
 }
 
+function loadTheme(): 'dark' | 'light' {
+  const stored = localStorage.getItem(THEME_KEY);
+  return stored === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme: 'dark' | 'light') {
+  if (theme === 'light') {
+    document.documentElement.classList.add('light');
+  } else {
+    document.documentElement.classList.remove('light');
+  }
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 interface ActiveSession {
@@ -40,7 +55,6 @@ interface ActiveSession {
   turnCount: number;
 }
 
-// Stable ref for session values — lets the demo loop avoid stale closures
 interface SessionRef {
   serverSessionId: string | null;
   isThinking: boolean;
@@ -51,24 +65,34 @@ interface AppState {
   active: ActiveSession;
   savedSessions: SavedSession[];
   isThinking: boolean;
+  isAnalyzing: boolean;
+  streamingText: string;
+  streamingQuestion: string;
   error: string | null;
   question: string;
   hoveredCommitmentId: string | null;
   demoStep: number;
   demoTitle: string;
+  theme: 'dark' | 'light';
+  imageAttachment: ImageAttachment | null;
 }
 
 type Action =
   | { type: 'session-server-ready'; serverSessionId: string }
   | { type: 'set-question'; value: string }
-  | { type: 'thinking-start' }
+  | { type: 'thinking-start'; question: string }
+  | { type: 'token-append'; token: string }
+  | { type: 'analyzing-start' }
   | { type: 'turn-complete'; turn: Turn; ledger: Commitment[] }
   | { type: 'error'; message: string }
   | { type: 'hover-commitment'; id: string | null }
   | { type: 'load-session'; session: SavedSession }
   | { type: 'new-session' }
   | { type: 'save-sessions'; sessions: SavedSession[] }
-  | { type: 'demo-step'; step: number; title?: string };
+  | { type: 'demo-step'; step: number; title?: string }
+  | { type: 'set-theme'; theme: 'dark' | 'light' }
+  | { type: 'set-image'; image: ImageAttachment | null }
+  | { type: 'delete-session'; id: string };
 
 function makeBlankActive(): ActiveSession {
   return { id: crypto.randomUUID(), serverSessionId: null, turns: [], ledger: [], title: '', turnCount: 0 };
@@ -78,11 +102,16 @@ const initial: AppState = {
   active: makeBlankActive(),
   savedSessions: loadSavedSessions(),
   isThinking: false,
+  isAnalyzing: false,
+  streamingText: '',
+  streamingQuestion: '',
   error: null,
   question: '',
   hoveredCommitmentId: null,
   demoStep: -1,
   demoTitle: '',
+  theme: loadTheme(),
+  imageAttachment: null,
 };
 
 function reducer(state: AppState, action: Action): AppState {
@@ -92,7 +121,16 @@ function reducer(state: AppState, action: Action): AppState {
     case 'set-question':
       return { ...state, question: action.value, error: null };
     case 'thinking-start':
-      return { ...state, isThinking: true, error: null };
+      return {
+        ...state,
+        isThinking: true, isAnalyzing: false,
+        streamingText: '', streamingQuestion: action.question,
+        question: '', error: null,
+      };
+    case 'token-append':
+      return { ...state, streamingText: state.streamingText + action.token };
+    case 'analyzing-start':
+      return { ...state, isAnalyzing: true };
     case 'turn-complete': {
       const turnCount = state.active.turnCount + 1;
       const title = state.active.title || generateTitle(action.turn.question);
@@ -100,11 +138,13 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         active: { ...state.active, turns, ledger: action.ledger, title, turnCount },
-        isThinking: false, question: '', error: null,
+        isThinking: false, isAnalyzing: false,
+        streamingText: '', streamingQuestion: '',
+        error: null, imageAttachment: null,
       };
     }
     case 'error':
-      return { ...state, isThinking: false, error: action.message };
+      return { ...state, isThinking: false, isAnalyzing: false, streamingText: '', error: action.message };
     case 'hover-commitment':
       return { ...state, hoveredCommitmentId: action.id };
     case 'load-session':
@@ -119,13 +159,29 @@ function reducer(state: AppState, action: Action): AppState {
           turnCount: action.session.turns.length,
         },
         question: '', error: null, hoveredCommitmentId: null,
+        isThinking: false, isAnalyzing: false, streamingText: '',
       };
     case 'new-session':
-      return { ...state, active: makeBlankActive(), question: '', error: null, hoveredCommitmentId: null, demoStep: -1 };
+      return {
+        ...state,
+        active: makeBlankActive(),
+        question: '', error: null, hoveredCommitmentId: null,
+        demoStep: -1, isThinking: false, isAnalyzing: false, streamingText: '',
+        imageAttachment: null,
+      };
     case 'save-sessions':
       return { ...state, savedSessions: action.sessions };
     case 'demo-step':
       return { ...state, demoStep: action.step, demoTitle: action.title ?? state.demoTitle };
+    case 'set-theme':
+      return { ...state, theme: action.theme };
+    case 'set-image':
+      return { ...state, imageAttachment: action.image };
+    case 'delete-session': {
+      const sessions = state.savedSessions.filter((s) => s.id !== action.id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+      return { ...state, savedSessions: sessions };
+    }
     default:
       return state;
   }
@@ -161,13 +217,24 @@ function Drawer({ open, onClose, children }: { open: boolean; onClose: () => voi
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initial);
   const turnIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const [mobileLedgerOpen, setMobileLedgerOpen] = useState(false);
+
+  // Apply theme on mount + when it changes
+  useEffect(() => {
+    applyTheme(state.theme);
+    localStorage.setItem(THEME_KEY, state.theme);
+  }, [state.theme]);
+
+  const toggleTheme = useCallback(() => {
+    dispatch({ type: 'set-theme', theme: state.theme === 'dark' ? 'light' : 'dark' });
+  }, [state.theme]);
 
   const startServerSession = useCallback(() => {
     createSession()
       .then((id) => dispatch({ type: 'session-server-ready', serverSessionId: id }))
-      .catch(() => dispatch({ type: 'error', message: 'Could not reach the server. Is it running on port 3001?' }));
+      .catch(() => dispatch({ type: 'error', message: 'Could not initialize session.' }));
   }, []);
 
   useEffect(() => { startServerSession(); }, [startServerSession]);
@@ -189,7 +256,7 @@ export default function App() {
     dispatch({ type: 'save-sessions', sessions: updated });
   }, [state.active.turns.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Stable ref so the demo loop reads live values, not stale closures
+  // Stable ref so async loops read live values
   const sessionRef = useRef<SessionRef>({ serverSessionId: null, isThinking: false, turnCount: 0 });
   useEffect(() => {
     sessionRef.current = {
@@ -199,27 +266,58 @@ export default function App() {
     };
   });
 
-  // Stable ref for ledger so demo loop always sends latest commitments
   const ledgerRef = useRef<Commitment[]>([]);
   useEffect(() => { ledgerRef.current = state.active.ledger; });
 
-  // Core submit — reads from sessionRef for latest values, safe in async loops
+  const imageRef = useRef<ImageAttachment | null>(null);
+  useEffect(() => { imageRef.current = state.imageAttachment; });
+
+  // Core streaming submit
   const submitTurnRef = useRef(async (question: string, predefinedAnswer?: string) => {
     const { serverSessionId, isThinking, turnCount } = sessionRef.current;
     if (!question.trim() || !serverSessionId || isThinking) return;
-    dispatch({ type: 'thinking-start' });
+
+    const image = imageRef.current;
+    dispatch({ type: 'thinking-start', question });
+
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+
     try {
-      const result = await askQuestion(serverSessionId, question, ledgerRef.current, predefinedAnswer);
-      turnIdRef.current++;
-      const turn: Turn = {
-        id: `turn-${turnIdRef.current}`,
+      let turnCompleted = false;
+
+      await askQuestionStreaming(
+        serverSessionId,
         question,
-        answer: result.answer,
-        claims: result.claims,
-        turnNumber: turnCount + 1,
-      };
-      dispatch({ type: 'turn-complete', turn, ledger: result.ledger });
+        ledgerRef.current,
+        predefinedAnswer,
+        image,
+        (token) => dispatch({ type: 'token-append', token }),
+        () => dispatch({ type: 'analyzing-start' }),
+        (answer, claims, ledger) => {
+          turnCompleted = true;
+          turnIdRef.current++;
+          const turn: Turn = {
+            id: `turn-${turnIdRef.current}`,
+            question,
+            answer,
+            claims,
+            turnNumber: turnCount + 1,
+            image: image?.dataUrl,
+          };
+          dispatch({ type: 'turn-complete', turn, ledger });
+        },
+        signal,
+      );
+
+      if (!turnCompleted) {
+        dispatch({ type: 'error', message: 'Response was cut short — try again.' });
+      }
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        dispatch({ type: 'error', message: '' });
+        return;
+      }
       const raw = err instanceof Error ? err.message : 'Unknown error';
       const message = raw.includes('not configured')
         ? 'Naus needs an API key on the server.'
@@ -228,11 +326,16 @@ export default function App() {
     }
   });
 
+  const handleStop = useCallback(() => {
+    abortControllerRef.current?.abort();
+    dispatch({ type: 'error', message: '' });
+  }, []);
+
   const handleAsk = useCallback(() => {
     submitTurnRef.current(state.question);
   }, [state.question]);
 
-  // Demo runner — uses ref-based submit to avoid stale closures across turns
+  // Demo runner
   const activeDemoLength = useRef(3);
   const demoRunning = useRef(false);
   const runDemo = useCallback(async (scenario: DemoScenario) => {
@@ -245,7 +348,7 @@ export default function App() {
       const { question, answer } = scenario.turns[i];
       await submitTurnRef.current(question, answer);
       if (i < scenario.turns.length - 1) {
-        await new Promise((r) => setTimeout(r, 1600));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
     dispatch({ type: 'demo-step', step: -1 });
@@ -254,6 +357,7 @@ export default function App() {
 
   const handleNew = useCallback(() => {
     demoRunning.current = false;
+    abortControllerRef.current?.abort();
     dispatch({ type: 'new-session' });
     setMobileHistoryOpen(false);
     startServerSession();
@@ -264,7 +368,27 @@ export default function App() {
     setMobileHistoryOpen(false);
   }, []);
 
-  const { active, savedSessions, isThinking, error, question, hoveredCommitmentId, demoStep, demoTitle } = state;
+  const handleDeleteSession = useCallback((id: string) => {
+    dispatch({ type: 'delete-session', id });
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && state.isThinking) {
+        handleStop();
+      }
+      if (e.key === 'n' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleNew();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [state.isThinking, handleStop, handleNew]);
+
+  const { active, savedSessions, isThinking, isAnalyzing, streamingText, streamingQuestion,
+    error, question, hoveredCommitmentId, demoStep, demoTitle, theme, imageAttachment } = state;
 
   return (
     <div className="h-full bg-bg text-text font-sans flex flex-col" style={{ overflow: 'hidden' }}>
@@ -272,7 +396,7 @@ export default function App() {
       {/* ── Header ── */}
       <header
         className="flex-shrink-0 border-b border-border flex items-center justify-between"
-        style={{ height: 52, padding: '0 16px', background: '#0D0D0F' }}
+        style={{ height: 52, padding: '0 16px', background: 'var(--color-bg)' }}
       >
         <div className="flex items-center gap-3">
           {/* Mobile: history toggle */}
@@ -285,7 +409,7 @@ export default function App() {
             ≡
           </button>
           <Ouroboros />
-          <span className="font-mono text-13" style={{ color: '#C9A961', letterSpacing: '0.02em' }}>
+          <span className="font-mono text-13" style={{ color: 'var(--color-gold)', letterSpacing: '0.02em' }}>
             naus
           </span>
           {active.title && (
@@ -295,10 +419,20 @@ export default function App() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <span className="hidden lg:block font-mono text-13" style={{ color: '#2A2A2E' }}>
-            every answer, fully accounted
+        <div className="flex items-center gap-3">
+          {/* Model badge */}
+          <span
+            className="hidden md:block font-mono"
+            style={{
+              fontSize: 10, lineHeight: '16px',
+              color: 'var(--color-ghost)', background: 'var(--color-border)',
+              borderRadius: 4, padding: '2px 7px', letterSpacing: '0.02em',
+            }}
+            title="Active model"
+          >
+            claude-sonnet-4-5
           </span>
+
           {/* Mobile: ledger toggle */}
           <button
             type="button"
@@ -307,9 +441,27 @@ export default function App() {
           >
             ledger {active.ledger.length > 0 && `(${active.ledger.length})`}
           </button>
-          <span className="font-mono text-13 hidden lg:block" style={{ color: '#2A2A2E' }}>
+
+          {/* Session ID */}
+          <span className="font-mono text-13 hidden lg:block" style={{ color: 'var(--color-whisper)' }}>
             {active.serverSessionId ? active.serverSessionId.slice(0, 8) : '·'}
           </span>
+
+          {/* Theme toggle */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--color-ghost)', fontSize: 14, lineHeight: 1, padding: '4px',
+              transition: 'color 0.15s',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-muted)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-ghost)'; }}
+          >
+            {theme === 'dark' ? '○' : '●'}
+          </button>
         </div>
       </header>
 
@@ -323,6 +475,7 @@ export default function App() {
             activeId={active.id}
             onSelect={handleLoadSession}
             onNew={handleNew}
+            onDelete={handleDeleteSession}
           />
         </div>
 
@@ -331,6 +484,9 @@ export default function App() {
           <Conversation
             turns={active.turns}
             isThinking={isThinking}
+            isAnalyzing={isAnalyzing}
+            streamingText={streamingText}
+            streamingQuestion={streamingQuestion}
             question={question}
             error={error}
             ledger={active.ledger}
@@ -339,9 +495,12 @@ export default function App() {
             demoLength={activeDemoLength.current}
             demoTitle={demoTitle}
             scenarios={DEMO_SCENARIOS}
+            imageAttachment={imageAttachment}
             onChange={(v) => dispatch({ type: 'set-question', value: v })}
             onAsk={handleAsk}
+            onStop={handleStop}
             onRunDemo={runDemo}
+            onImageChange={(img) => dispatch({ type: 'set-image', image: img })}
           />
         </div>
 
@@ -352,6 +511,7 @@ export default function App() {
             turns={active.turns}
             title={active.title}
             onHover={(id) => dispatch({ type: 'hover-commitment', id })}
+            isAnalyzing={isAnalyzing}
           />
         </div>
       </div>
@@ -363,6 +523,7 @@ export default function App() {
           activeId={active.id}
           onSelect={handleLoadSession}
           onNew={handleNew}
+          onDelete={handleDeleteSession}
         />
       </Drawer>
 
@@ -377,13 +538,13 @@ export default function App() {
             <motion.div
               initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={spring}
               className="fixed right-0 top-0 bottom-0 z-50 flex flex-col border-l border-border"
-              style={{ width: 300, background: '#0A0A0B' }}
+              style={{ width: 300, background: 'var(--color-bg)' }}
             >
               <div
                 className="flex items-center justify-between border-b border-border flex-shrink-0"
                 style={{ height: 52, padding: '0 16px' }}
               >
-                <span className="font-mono text-13 text-muted uppercase tracking-wider">ledger</span>
+                <span className="font-mono text-11 text-muted uppercase tracking-wider">ledger</span>
                 <button
                   type="button"
                   onClick={() => setMobileLedgerOpen(false)}
@@ -398,6 +559,7 @@ export default function App() {
                   turns={active.turns}
                   title={active.title}
                   onHover={(id) => dispatch({ type: 'hover-commitment', id })}
+                  isAnalyzing={isAnalyzing}
                 />
               </div>
             </motion.div>

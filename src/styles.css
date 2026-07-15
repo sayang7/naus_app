@@ -2,14 +2,86 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Design tokens ────────────────────────────────────────────────────────── */
+
 :root {
-  color: #f5f4f0;
-  background: #0a0a0b;
+  color-scheme: dark;
+
+  /* Structural */
+  --color-bg:        #0A0A0B;
+  --color-panel:     #111113;
+  --color-panel-2:   #0D0D10;
+  --color-border:    #1F1F22;
+  --color-border-2:  #1A1A1E;
+  --color-border-3:  #1C1C22;
+  --color-surface:   #16161A;
+  --color-surface-2: #18181C;
+
+  /* Text */
+  --color-text:       #F5F4F0;
+  --color-muted:      #B0B0AC;
+  --color-subtle:     #A0A0A0;
+  --color-faint:      #909090;
+  --color-ghost:      #707070;
+  --color-whisper:    #505050;
+
+  /* Brand */
+  --color-gold:       #C9A961;
+  --color-red:        #E5484D;
+  --color-purple:     #A78BFA;
+
+  /* Status */
+  --color-grounded:      #6B7280;
+  --color-ambiguous:     #C9A961;
+  --color-assumption:    #8A8A85;
+  --color-unverifiable:  #A78BFA;
+  --color-contradiction: #E5484D;
+
+  color: var(--color-text);
+  background: var(--color-bg);
   font-synthesis: none;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11';
 }
+
+/* ── Light mode overrides ─────────────────────────────────────────────────── */
+
+html.light {
+  color-scheme: light;
+
+  --color-bg:        #F8F7F4;
+  --color-panel:     #EFEEEA;
+  --color-panel-2:   #F2F1ED;
+  --color-border:    #DEDCD6;
+  --color-border-2:  #E2E0DA;
+  --color-border-3:  #D8D6D0;
+  --color-surface:   #E8E7E2;
+  --color-surface-2: #E4E3DE;
+
+  --color-text:       #18181A;
+  --color-muted:      #6B6B68;
+  --color-subtle:     #5A5A58;
+  --color-faint:      #707070;
+  --color-ghost:      #9A9A98;
+  --color-whisper:    #B0B0AE;
+
+  --color-gold:       #8F7230;
+  --color-red:        #CC2D33;
+  --color-purple:     #7C5CC7;
+
+  --color-grounded:      #5A6070;
+  --color-ambiguous:     #8F7230;
+  --color-assumption:    #6A6A66;
+  --color-unverifiable:  #7C5CC7;
+  --color-contradiction: #CC2D33;
+
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
 
 * {
   box-sizing: border-box;
@@ -25,8 +97,8 @@ body,
 }
 
 body {
-  background-color: #0a0a0b;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='.02'/%3E%3C/svg%3E");
+  background-color: var(--color-bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='.015'/%3E%3C/svg%3E");
 }
 
 button,
@@ -40,4 +112,55 @@ button {
 
 ::selection {
   background: rgba(201, 169, 97, 0.22);
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+/* ── Placeholder text ─────────────────────────────────────────────────────── */
+
+::placeholder {
+  color: var(--color-ghost);
+  opacity: 1;
+}
+
+/* ── Light-mode explicit overrides ────────────────────────────────────────── */
+
+html.light textarea,
+html.light input {
+  color: var(--color-text);
+  background-color: transparent;
+}
+
+html.light button {
+  color: inherit;
+}
+
+/* ── Skeleton shimmer ─────────────────────────────────────────────────────── */
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-border) 25%,
+    var(--color-surface) 50%,
+    var(--color-border) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 4px;
 }
