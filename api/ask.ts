@@ -32,7 +32,7 @@ const MODEL = 'claude-sonnet-4-5';
 
 let _client: Anthropic | null = null;
 function getClient() {
-  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY?.trim() });
   return _client;
 }
 

@@ -1,5 +1,5 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+export const runtime = 'edge';
 
-export default function handler(_req: VercelRequest, res: VercelResponse) {
-  res.json({ sessionId: crypto.randomUUID() });
+export default function handler() {
+  return Response.json({ sessionId: crypto.randomUUID() });
 }
