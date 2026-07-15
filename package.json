@@ -14,6 +14,7 @@
     "setup:server": "npm install --prefix server"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@fontsource/instrument-serif": "^5.2.8",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
@@ -29,7 +30,6 @@
     "vite": "^6.0.5"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vercel/node": "^5.8.24",
